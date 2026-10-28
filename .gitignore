@@ -1,0 +1,27 @@
+# Dependencies, builds, and caches
+node_modules/
+/dist/
+/coverage/
+/.cache/
+*.tsbuildinfo
+
+# Generated media and experiment output; keep deliberate fixtures trackable
+/output/
+/recordings/
+/tmp/
+*.log
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+*.key
+*.p12
+*.pfx
+
+# OS and editor-local files
+.DS_Store
+Thumbs.db
+.idea/
+*.swp
+*.swo
