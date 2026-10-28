@@ -1,0 +1,26 @@
+{
+  "name": "rivu",
+  "version": "0.0.0",
+  "description": "A small media transport playground, built one piece at a time.",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24.22.1 <25",
+    "npm": ">=11.19.1 <12"
+  },
+  "packageManager": "npm@11.19.1",
+  "scripts": {
+    "dev": "node --import tsx src/cli/main.ts",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc -p tsconfig.build.json",
+    "start": "node dist/cli/main.js",
+    "test": "node --import tsx --test",
+    "check": "npm run typecheck && npm run build && npm test",
+    "audit": "npm audit --audit-level=low"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.2",
+    "tsx": "4.23.15",
+    "typescript": "7.0.2"
+  }
+}
