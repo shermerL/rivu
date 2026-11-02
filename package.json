@@ -15,7 +15,8 @@
     "build": "tsc -p tsconfig.build.json",
     "start": "node dist/cli/main.js",
     "test": "node --import tsx --test",
-    "check": "npm run typecheck && npm run build && npm test",
+    "check:built": "node scripts/check-built.mjs",
+    "check": "npm run typecheck && npm run build && npm test && npm run check:built",
     "audit": "npm audit --audit-level=low"
   },
   "devDependencies": {
