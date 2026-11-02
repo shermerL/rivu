@@ -1,8 +1,13 @@
 import { parseArgs } from "./args.js";
 import { createLogger } from "../node/logger.js";
+import { playImage } from "./play-image.js";
 
 const HELP = `Rivu - media transport playground
 Usage: rivu [--help | --version]
+       rivu play-image <path>
+
+Commands:
+  play-image <path>  Display a local image with FFplay; close the window or press Ctrl+C to stop
 
 Options:
   --help     Show this help message
@@ -11,6 +16,9 @@ Options:
 const action = parseArgs(process.argv.slice(2));
 
 switch (action.kind) {
+  case "play-image":
+    process.exitCode = await playImage(action.path);
+    break;
   case "help":
     console.log(HELP);
     break;
