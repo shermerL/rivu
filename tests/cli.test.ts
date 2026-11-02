@@ -11,6 +11,9 @@ const cases: { name: string; args: string[]; expected: CliAction }[] = [
   { name: "no arguments", args: [], expected: { kind: "help" } },
   { name: "help", args: ["--help"], expected: { kind: "help" } },
   { name: "version", args: ["--version"], expected: { kind: "version" } },
+  { name: "missing image path", args: ["play-image"], expected: { kind: "error", message: "Expected: play-image <path>" } },
+  { name: "empty image path", args: ["play-image", ""], expected: { kind: "error", message: "Expected: play-image <path>" } },
+  { name: "extra image argument", args: ["play-image", "frame.jpg", "extra"], expected: { kind: "error", message: "Expected: play-image <path>" } },
   {
     name: "unknown word",
     args: ["hello"],
@@ -101,5 +104,11 @@ for (const { name, args, expected } of cases) {
         assert.match(result.stdout, /--version\s+Show version/);
       }
     }
+  });
+}
+
+for (const path of ["frame.jpg", "folder with spaces/frame.jpg", "-frame.jpg"]) {
+  test(`parseArgs: image path ${JSON.stringify(path)}`, () => {
+    assert.deepEqual(parseArgs(["play-image", path]), { kind: "play-image", path });
   });
 }
