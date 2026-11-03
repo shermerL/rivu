@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
+import { writeBuffer } from "./write-buffer.js";
 
 type SpawnPlayer = (command: string, args: string[], options: SpawnOptions) => ChildProcess;
 type PlayerOptions = {
@@ -70,6 +71,20 @@ export function runFFplay(input: string | Buffer, options: PlayerOptions): Promi
       timer.unref();
     }
 
+    async function feedJpeg(jpeg: Buffer): Promise<void> {
+      const stdin = child.stdin;
+
+      if (!stdin) {
+        throw new Error("FFplay stdin is unavailable");
+      }
+
+      await writeBuffer(stdin, jpeg, options.signal);
+
+      if (!options.signal.aborted && !stdin.destroyed) {
+        stdin.end();
+      }
+    }
+
     const abort = () => stop("cancelled");
     child.on("error", cause => { error ??= cause; });
     child.stdin?.on("error", cause => {
@@ -81,7 +96,13 @@ export function runFFplay(input: string | Buffer, options: PlayerOptions): Promi
       options.onSpawn?.();
 
       if (Buffer.isBuffer(input) && !options.signal.aborted) {
-        child.stdin!.end(input);
+        void feedJpeg(input).catch(cause => {
+          error ??= cause instanceof Error
+            ? cause
+            : new Error(String(cause));
+
+          stop("diagnostic");
+        });
       }
     });
     child.stderr?.on("data", (chunk: Buffer) => {
