@@ -14,6 +14,9 @@ const cases: { name: string; args: string[]; expected: CliAction }[] = [
   { name: "missing image path", args: ["play-image"], expected: { kind: "error", message: "Expected: play-image <path>" } },
   { name: "empty image path", args: ["play-image", ""], expected: { kind: "error", message: "Expected: play-image <path>" } },
   { name: "extra image argument", args: ["play-image", "frame.jpg", "extra"], expected: { kind: "error", message: "Expected: play-image <path>" } },
+  { name: "missing JPEG path", args: ["play-jpeg"], expected: { kind: "error", message: "Expected: play-jpeg <path>" } },
+  { name: "empty JPEG path", args: ["play-jpeg", ""], expected: { kind: "error", message: "Expected: play-jpeg <path>" } },
+  { name: "extra JPEG argument", args: ["play-jpeg", "frame.jpg", "extra"], expected: { kind: "error", message: "Expected: play-jpeg <path>" } },
   {
     name: "unknown word",
     args: ["hello"],
@@ -110,5 +113,8 @@ for (const { name, args, expected } of cases) {
 for (const path of ["frame.jpg", "folder with spaces/frame.jpg", "-frame.jpg"]) {
   test(`parseArgs: image path ${JSON.stringify(path)}`, () => {
     assert.deepEqual(parseArgs(["play-image", path]), { kind: "play-image", path });
+  });
+  test(`parseArgs: JPEG path ${JSON.stringify(path)}`, () => {
+    assert.deepEqual(parseArgs(["play-jpeg", path]), { kind: "play-jpeg", path });
   });
 }

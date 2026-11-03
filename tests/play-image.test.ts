@@ -38,15 +38,27 @@ process.on('SIGINT', () => process.exit(0));
 const record = JSON.stringify({ pid: process.pid, args: process.argv.slice(2) });
 fs.writeFileSync(process.env.TEST_READY + '.tmp', record);
 fs.renameSync(process.env.TEST_READY + '.tmp', process.env.TEST_READY);
-if (mode === 'normal') process.exit(0);
-else if (mode === 'diagnostic') process.stderr.write('[error] decode failed\\n', () => process.exit(0));
-else if (mode === 'nonzero') process.exit(7);
-else setInterval(() => {}, 1000);
+function finish() {
+  if (mode === 'normal') process.exit(0);
+  else if (mode === 'diagnostic') process.stderr.write('[error] decode failed\\n', () => process.exit(0));
+  else if (mode === 'nonzero') process.exit(7);
+  else setInterval(() => {}, 1000);
+}
+if (process.argv.includes('image2pipe')) {
+  const chunks = [];
+  process.stdin.on('data', chunk => chunks.push(chunk));
+  process.stdin.on('end', () => {
+    fs.writeFileSync(process.env.TEST_RECEIVED, Buffer.concat(chunks));
+    finish();
+  });
+} else finish();
 `;
 type Ready = { pid: number; args: string[] };
-function fixture(t: TestContext, entry: string, mode = 'normal') {
+function fixture(t: TestContext, entry: string, mode = 'normal', command = 'play-image') {
   const dir = mkdtempSync(join(tmpdir(), 'play image '));
-  const image = join(dir, '- image with spaces.png'); writeFileSync(image, 'fixture');
+  const image = join(dir, '- image with spaces.png');
+  writeFileSync(image, command === 'play-jpeg' ? readFileSync(join(root, 'fixtures/frame.jpg')) : 'fixture');
+  const received = join(dir, 'received.bin');
   const executable = join(dir, 'ffplay');
   writeFileSync(executable, `#!${process.execPath}\n${shim}`, { mode: 0o755 });
   const runner = join(dir, 'runner.mjs'); writeFileSync(runner, bootstrap);
@@ -75,10 +87,10 @@ function fixture(t: TestContext, entry: string, mode = 'normal') {
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
   return {
-    dir, image, executable, ready,
+    dir, image, executable, ready, received,
     start(input: string) {
-      child = spawn(process.execPath, ['--import', loader, runner, 'play-image', input], {
-        cwd: dir, env: { ...process.env, PATH: dir, TEST_ENTRY: entry, TEST_MODE: mode, TEST_READY: readyPath },
+      child = spawn(process.execPath, ['--import', loader, runner, command, input], {
+        cwd: dir, env: { ...process.env, PATH: dir, TEST_ENTRY: entry, TEST_MODE: mode, TEST_READY: readyPath, TEST_RECEIVED: received },
         stdio: ['ignore', 'pipe', 'pipe'],
       });
       child.stdout!.on('data', chunk => { output += String(chunk); });
@@ -102,6 +114,59 @@ function fixture(t: TestContext, entry: string, mode = 'normal') {
 }
 
 for (const [label, entry] of entries) {
+  for (const size of ['fixture', 'limit'] as const) {
+    test(`${label}: JPEG pipe preserves ${size} bytes and signals EOF`, { skip: !supported, timeout: 12000 }, async t => {
+      const f = fixture(t, entry, 'normal', 'play-jpeg');
+      if (size === 'limit') {
+        const bytes = Buffer.alloc(512 * 1024); bytes[0] = 0xff; bytes[1] = 0xd8;
+        writeFileSync(f.image, bytes);
+      }
+      f.start('- image with spaces.png');
+      const record = await bounded(f.ready); const result = await f.finish();
+      assert.equal(result.code, 0, result.errors); assert.equal(result.signal, null);
+      assert.equal(record.args[record.args.indexOf('-i') + 1], 'pipe:0');
+      assert.equal(record.args[record.args.indexOf('-f') + 1], 'image2pipe');
+      assert.deepEqual(readFileSync(f.received), readFileSync(f.image));
+      assert.match(result.errors, /"event":"loaded"/);
+      assert.equal(gone(record.pid), true);
+    });
+  }
+  for (const mode of ['missing', 'directory', 'empty', 'bad-header', 'oversize', 'spawn-failure', 'diagnostic', 'nonzero']) {
+    test(`${label}: JPEG pipe rejects ${mode}`, { skip: !supported, timeout: 12000 }, async t => {
+      const f = fixture(t, entry, mode, 'play-jpeg');
+      let input = f.image;
+      if (mode === 'missing') input = join(f.dir, 'missing.jpg');
+      if (mode === 'directory') input = f.dir;
+      if (mode === 'empty') writeFileSync(input, Buffer.alloc(0));
+      if (mode === 'bad-header') writeFileSync(input, 'bad JPEG');
+      if (mode === 'oversize') {
+        const bytes = Buffer.alloc(512 * 1024 + 1); bytes[0] = 0xff; bytes[1] = 0xd8;
+        writeFileSync(input, bytes);
+      }
+      if (mode === 'spawn-failure') unlinkSync(f.executable);
+      f.start(input);
+      const result = await f.finish();
+      assert.equal(result.code, 1, result.errors); assert.equal(result.signal, null);
+      if (!['diagnostic', 'nonzero'].includes(mode)) {
+        assert.equal(existsSync(join(f.dir, 'ready.json')), false, 'invalid input must not launch player');
+      }
+      if (mode === 'missing' || mode === 'spawn-failure') assert.match(result.errors, /ENOENT/);
+      if (mode === 'diagnostic') assert.match(result.errors, /decode failed/);
+    });
+  }
+  for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+    for (const mode of ['hold', 'ignore']) {
+      test(`${label}: JPEG pipe ${signal}, player ${mode}`, { skip: !supported, timeout: 12000 }, async t => {
+        const f = fixture(t, entry, mode, 'play-jpeg'); const cli = f.start(f.image);
+        const record = await bounded(f.ready);
+        assert.equal(cli.kill(signal), true);
+        const result = await f.finish();
+        assert.equal(result.code, signal === 'SIGINT' ? 130 : 143, result.errors);
+        assert.equal(result.signal, null);
+        assert.equal(gone(record.pid), true);
+      });
+    }
+  }
   test(`${label}: local paths, spaces and leading dash; ordinary close succeeds`, { skip: !supported, timeout: 12000 }, async t => {
     const f = fixture(t, entry); f.start('- image with spaces.png');
     const record = await bounded(f.ready); const result = await f.finish();

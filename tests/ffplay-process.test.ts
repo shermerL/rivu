@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { EventEmitter, getEventListeners } from 'node:events';
+import { EventEmitter, getEventListeners, once } from 'node:events';
 import { PassThrough } from 'node:stream';
 import test, { type TestContext } from 'node:test';
 import { runFFplay } from '../src/node/ffplay-process.js';
@@ -17,7 +17,8 @@ function fake() {
   const kills: unknown[] = [];
   const emitter = Object.assign(new EventEmitter(), {
     pid: 123456, exitCode: null as number | null, signalCode: null as NodeJS.Signals | null,
-    stderr: new PassThrough(), kill: (signal: unknown) => { kills.push(signal); return true; },
+    stdin: new PassThrough(), stderr: new PassThrough(),
+    kill: (signal: unknown) => { kills.push(signal); return true; },
   });
   return { child: emitter as unknown as ChildProcess, emitter, kills };
 }
@@ -172,4 +173,59 @@ test('FFmpeg error marker split between chunks still fails', async () => {
   assert.deepEqual(f.kills, ['SIGTERM']);
   f.emitter.emit('close', 0, null);
   assert.equal((await result).kind, 'failed');
+});
+
+test('JPEG pipe sends exact bytes and EOF, then waits for player close', async () => {
+  const f = fake(); const controller = new AbortController();
+  const bytes = Buffer.from([0xff, 0xd8, 0, 0x80, 0xff, 0xd9]);
+  const chunks: Buffer[] = [];
+  f.emitter.stdin.on('data', chunk => chunks.push(Buffer.from(chunk)));
+  const finished = once(f.emitter.stdin, 'finish');
+  const result = runFFplay(bytes, { signal: controller.signal,
+    spawnPlayer(command, args, options) {
+      assert.equal(command, 'ffplay');
+      assert.equal(options.shell, false);
+      assert.deepEqual(options.stdio, ['pipe', 'ignore', 'pipe']);
+      for (const [flag, value] of [['-f', 'image2pipe'], ['-vcodec', 'mjpeg'], ['-i', 'pipe:0']]) {
+        assert.equal(args[args.indexOf(flag!) + 1], value);
+      }
+      return f.child;
+    } });
+  let settled = false; void result.then(() => { settled = true; });
+  f.emitter.emit('spawn');
+  await bounded(finished);
+  assert.deepEqual(Buffer.concat(chunks), bytes);
+  assert.equal(f.emitter.stdin.writableEnded, true);
+  assert.equal(settled, false, 'finishing stdin must not finish playback');
+  f.emitter.emit('close', 0, null);
+  assert.deepEqual(await result, { kind: 'closed', code: 0, signal: null });
+  assert.deepEqual(getEventListeners(controller.signal, 'abort'), []);
+});
+
+test('JPEG pipe write failure stops the child and waits for close', async () => {
+  const f = fake(); const c = new AbortController();
+  const error = Object.assign(new Error('Broken pipe'), { code: 'EPIPE' });
+  const result = runFFplay(Buffer.from([0xff, 0xd8]), { signal: c.signal, spawnPlayer: () => f.child });
+  let settled = false; void result.then(() => { settled = true; });
+  f.emitter.stdin.emit('error', error);
+  await Promise.resolve();
+  assert.equal(f.emitter.stdin.destroyed, true);
+  assert.equal(settled, false);
+  assert.deepEqual(f.kills, ['SIGTERM']);
+  f.emitter.emit('close', 0, null);
+  assert.deepEqual(await result, { kind: 'failed', error, diagnostic: '' });
+  assert.deepEqual(getEventListeners(c.signal, 'abort'), []);
+});
+
+test('JPEG cancellation before spawn destroys stdin without writing bytes', async () => {
+  const f = fake(); const c = new AbortController();
+  const result = runFFplay(Buffer.from([0xff, 0xd8]), { signal: c.signal, spawnPlayer() {
+    c.abort(); return f.child;
+  } });
+  assert.equal(f.emitter.stdin.destroyed, true);
+  f.emitter.emit('spawn');
+  assert.equal(f.emitter.stdin.writableLength, 0);
+  f.emitter.emit('close', null, 'SIGTERM');
+  assert.deepEqual(await result, { kind: 'cancelled' });
+  assert.deepEqual(f.kills, ['SIGTERM']);
 });

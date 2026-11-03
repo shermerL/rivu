@@ -7,7 +7,8 @@ const source = fileURLToPath(new URL("../src/cli/main.ts", import.meta.url));
 const built = fileURLToPath(new URL("../dist/cli/main.js", import.meta.url));
 const loader = import.meta.resolve("tsx");
 const cases = [[], ["--help"], ["--version"], ["hello"], ["--unknown"], ["-h"], [""],
-  ["--help", "extra"], ["--version", "extra"], ["--help", "--version"], ["--version", "--help"], ["bad\nargument"], ["play-image"], ["play-image", ""], ["play-image", "frame.jpg", "extra"]];
+  ["--help", "extra"], ["--version", "extra"], ["--help", "--version"], ["--version", "--help"], ["bad\nargument"], ["play-image"], ["play-image", ""], ["play-image", "frame.jpg", "extra"],
+  ["play-jpeg"], ["play-jpeg", ""], ["play-jpeg", "frame.jpg", "extra"]];
 
 function run(entry, args) {
   const result = spawnSync(process.execPath, [...entry, ...args], {
@@ -40,4 +41,4 @@ process.stdout.write(playback.stdout ?? "");
 process.stderr.write(playback.stderr ?? "");
 assert.equal(playback.error, undefined);
 assert.equal(playback.signal, null);
-assert.equal(playback.status, 0, "Built play-image integration checks failed");
+assert.equal(playback.status, 0, "Built image playback integration checks failed");
