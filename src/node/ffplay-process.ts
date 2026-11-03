@@ -13,16 +13,40 @@ export type PlayerResult =
   | { kind: "cancelled" };
 
 // Resolves only after close, including when spawn fails or cancellation escalates.
-export function runFFplay(path: string, options: PlayerOptions): Promise<PlayerResult> {
+export function runFFplay(input: string | Buffer, options: PlayerOptions): Promise<PlayerResult> {
   if (options.signal.aborted) return Promise.resolve({ kind: "cancelled" });
 
   return new Promise(resolve => {
     let child: ChildProcess;
     try {
-      child = (options.spawnPlayer ?? spawn)("ffplay", [
-        "-hide_banner", "-loglevel", "level+error", "-nostats", "-an", "-sn",
-        "-f", "image2", "-pattern_type", "none", "-i", path,
-      ], { shell: false, stdio: ["ignore", "ignore", "pipe"] });
+      const inputArgs = typeof input === "string"
+        ? ["-f", "image2", "-pattern_type", "none", "-i", input]
+        : [
+            "-f", "image2pipe",
+            "-framerate", "10",
+            "-vcodec", "mjpeg",
+            "-i", "pipe:0",
+          ];
+
+      child = (options.spawnPlayer ?? spawn)(
+        "ffplay",
+        [
+          "-hide_banner",
+          "-loglevel", "level+error",
+          "-nostats",
+          "-an",
+          "-sn",
+          ...inputArgs,
+        ],
+        {
+          shell: false,
+          stdio: [
+            typeof input === "string" ? "ignore" : "pipe",
+            "ignore",
+            "pipe",
+          ],
+        },
+      );
     } catch (error) {
       resolve({ kind: "failed", error: error instanceof Error ? error : new Error(String(error)), diagnostic: "" });
       return;
@@ -37,6 +61,7 @@ export function runFFplay(path: string, options: PlayerOptions): Promise<PlayerR
     function stop(reason: "cancelled" | "diagnostic") {
       if (stopReason) return;
       stopReason = reason;
+      child.stdin?.destroy();
       if (!running() || child.pid === undefined) return;
       child.kill("SIGTERM");
       timer = setTimeout(() => {
@@ -47,7 +72,18 @@ export function runFFplay(path: string, options: PlayerOptions): Promise<PlayerR
 
     const abort = () => stop("cancelled");
     child.on("error", cause => { error ??= cause; });
-    child.once("spawn", () => { options.onSpawn?.(); });
+    child.stdin?.on("error", cause => {
+      error ??= cause;
+      stop("diagnostic");
+    });
+
+    child.once("spawn", () => {
+      options.onSpawn?.();
+
+      if (Buffer.isBuffer(input) && !options.signal.aborted) {
+        child.stdin!.end(input);
+      }
+    });
     child.stderr?.on("data", (chunk: Buffer) => {
       // FFplay may report a decoding failure while eventually exiting with code 0.
       // Keep only the last 8 KiB of error-level output and stop a failed player.

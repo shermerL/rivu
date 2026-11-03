@@ -1,10 +1,15 @@
-import { access, stat } from "node:fs/promises";
+import { access, readFile, stat } from "node:fs/promises";
 import { constants } from "node:fs";
 import { resolve } from "node:path";
-import { runFFplay } from "../node/ffplay-process.js";
+
+import { runFFplay, type PlayerResult } from "../node/ffplay-process.js";
+import { playJpeg, MAX_JPEG_BYTES } from "../node/ffplay-sink.js";
 import { createLogger, errorFields } from "../node/logger.js";
 
-export async function playImage(input: string): Promise<number> {
+export async function playImage(
+  input: string,
+  mode: "path" | "pipe" = "path",
+): Promise<number> {
   const logger = createLogger("player");
   const controller = new AbortController();
   let interrupted: "SIGINT" | "SIGTERM" | undefined;
@@ -18,12 +23,39 @@ export async function playImage(input: string): Promise<number> {
   process.on("SIGTERM", onTerminate);
   try {
     const path = resolve(input);
-    if (!(await stat(path)).isFile()) throw new Error("Image path must be a regular file");
+    const info = await stat(path);
+
+    if (!info.isFile()) {
+      throw new Error("Image path must be a regular file");
+    }
+
     await access(path, constants.R_OK);
-    const result = await runFFplay(path, {
-      signal: controller.signal,
-      onSpawn: () => { logger.info("started", { path }); },
-    });
+
+    let result: PlayerResult;
+
+    if (mode === "pipe") {
+      if (info.size > MAX_JPEG_BYTES) {
+        throw new Error("JPEG exceeds 512 KiB");
+      }
+
+      const jpeg = await readFile(path, {
+        signal: controller.signal,
+      });
+
+      logger.info("loaded", {
+        path,
+        bytes: jpeg.length,
+      });
+
+      result = await playJpeg(jpeg, controller.signal);
+    } else {
+      result = await runFFplay(path, {
+        signal: controller.signal,
+        onSpawn: () => {
+          logger.info("started", { path });
+        },
+      });
+    }
     if (result.kind === "cancelled") {
       logger.info("cancelled", { signal: interrupted ?? "SIGINT" });
       return interrupted === "SIGTERM" ? 143 : 130;
