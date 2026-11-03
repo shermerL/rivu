@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { EventEmitter, getEventListeners, once } from 'node:events';
-import { PassThrough } from 'node:stream';
+import { PassThrough, Writable } from 'node:stream';
 import test, { type TestContext } from 'node:test';
 import { runFFplay } from '../src/node/ffplay-process.js';
 
@@ -228,4 +228,29 @@ test('JPEG cancellation before spawn destroys stdin without writing bytes', asyn
   f.emitter.emit('close', null, 'SIGTERM');
   assert.deepEqual(await result, { kind: 'cancelled' });
   assert.deepEqual(f.kills, ['SIGTERM']);
+});
+
+test('JPEG pipe waits for drain before EOF and preserves the exact bytes', async () => {
+  const f = fake();
+  const c = new AbortController();
+  const bytes = Buffer.from([0xff, 0xd8, 1, 2, 3, 4, 0xff, 0xd9]);
+  const chunks: Buffer[] = [];
+  let release: () => void = () => { throw new Error('No write'); };
+  const stdin = new Writable({ highWaterMark: 4, write(chunk, _encoding, callback) {
+    chunks.push(Buffer.from(chunk)); release = callback;
+  } });
+  Object.assign(f.emitter, { stdin });
+  const result = runFFplay(bytes, { signal: c.signal, spawnPlayer: () => f.child });
+  const finished = once(stdin, 'finish');
+  f.emitter.emit('spawn');
+  await Promise.resolve();
+  assert.equal(stdin.writableNeedDrain, true);
+  assert.equal(stdin.writableEnded, false);
+  release();
+  await bounded(finished);
+  assert.deepEqual(chunks, [bytes]);
+  assert.equal(stdin.writableEnded, true);
+  f.emitter.emit('close', 0, null);
+  assert.deepEqual(await result, { kind: 'closed', code: 0, signal: null });
+  assert.deepEqual(getEventListeners(c.signal, 'abort'), []);
 });
