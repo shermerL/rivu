@@ -14,7 +14,7 @@ export type PlayerResult =
   | { kind: "cancelled" };
 
 // Resolves only after close, including when spawn fails or cancellation escalates.
-export function runFFplay(input: string | Buffer, options: PlayerOptions): Promise<PlayerResult> {
+export function runFFplay(input: string | Buffer | readonly Buffer[], options: PlayerOptions): Promise<PlayerResult> {
   if (options.signal.aborted) return Promise.resolve({ kind: "cancelled" });
 
   return new Promise(resolve => {
@@ -71,14 +71,18 @@ export function runFFplay(input: string | Buffer, options: PlayerOptions): Promi
       timer.unref();
     }
 
-    async function feedJpeg(jpeg: Buffer): Promise<void> {
+    async function feedJpegs(
+      frames: readonly Buffer[],
+    ): Promise<void> {
       const stdin = child.stdin;
 
       if (!stdin) {
         throw new Error("FFplay stdin is unavailable");
       }
 
-      await writeBuffer(stdin, jpeg, options.signal);
+      for (const jpeg of frames) {
+        await writeBuffer(stdin, jpeg, options.signal);
+      }
 
       if (!options.signal.aborted && !stdin.destroyed) {
         stdin.end();
@@ -95,8 +99,10 @@ export function runFFplay(input: string | Buffer, options: PlayerOptions): Promi
     child.once("spawn", () => {
       options.onSpawn?.();
 
-      if (Buffer.isBuffer(input) && !options.signal.aborted) {
-        void feedJpeg(input).catch(cause => {
+      if (typeof input !== "string" && !options.signal.aborted) {
+        const frames = Buffer.isBuffer(input) ? [input] : input;
+
+        void feedJpegs(frames).catch(cause => {
           error ??= cause instanceof Error
             ? cause
             : new Error(String(cause));
