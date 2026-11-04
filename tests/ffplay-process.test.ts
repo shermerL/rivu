@@ -254,3 +254,156 @@ test('JPEG pipe waits for drain before EOF and preserves the exact bytes', async
   assert.deepEqual(await result, { kind: 'closed', code: 0, signal: null });
   assert.deepEqual(getEventListeners(c.signal, 'abort'), []);
 });
+
+function sequencePlayer(t: TestContext) {
+  const f = fake();
+  const chunks: Buffer[] = [];
+  const callbacks: Array<(error?: Error | null) => void> = [];
+  let finalCalls = 0;
+  const stdin = new Writable({
+    highWaterMark: 1,
+    write(chunk, _encoding, callback) {
+      chunks.push(Buffer.from(chunk));
+      callbacks.push(callback);
+    },
+    final(callback) { finalCalls++; callback(); },
+  });
+  Object.assign(f.emitter, { stdin });
+  t.after(() => {
+    stdin.destroy();
+    f.emitter.exitCode = 0;
+    f.emitter.emit('close', 0, null);
+  });
+  return { ...f, stdin, chunks,
+    get finalCalls() { return finalCalls; },
+    release(error?: Error) {
+      const callback = callbacks.shift();
+      assert.ok(callback, 'expected a pending write');
+      callback(error);
+    },
+  };
+}
+
+const sequence = Object.freeze([
+  Buffer.from([0xff, 0xd8, 1, 0xff, 0xd9]),
+  Buffer.from([0xff, 0xd8, 2, 3, 0xff, 0xd9]),
+  Buffer.from([0xff, 0xd8, 4, 5, 6, 0xff, 0xd9]),
+]);
+const nextTurn = () => new Promise<void>(resolve => setImmediate(resolve));
+
+test('JPEG sequence uses one player and waits for each drain before the next frame', async t => {
+  const f = sequencePlayer(t);
+  const c = new AbortController();
+  let spawns = 0;
+  const result = runFFplay(sequence, { signal: c.signal, spawnPlayer(_command, args, options) {
+    spawns++;
+    assert.deepEqual(options.stdio, ['pipe', 'ignore', 'pipe']);
+    assert.equal(args[args.indexOf('-f') + 1], 'image2pipe');
+    assert.equal(args[args.indexOf('-framerate') + 1], '10');
+    assert.equal(args[args.indexOf('-i') + 1], 'pipe:0');
+    return f.child;
+  } });
+  let settled = false;
+  void result.then(() => { settled = true; });
+  f.emitter.emit('spawn');
+  for (let index = 0; index < sequence.length; index++) {
+    await nextTurn();
+    assert.deepEqual(f.chunks, sequence.slice(0, index + 1));
+    assert.equal(f.stdin.writableNeedDrain, true);
+    assert.equal(f.stdin.writableEnded, false);
+    assert.equal(f.finalCalls, 0);
+    f.release();
+  }
+  await nextTurn();
+  assert.deepEqual(f.chunks, sequence);
+  assert.equal(f.finalCalls, 1);
+  assert.equal(f.stdin.writableEnded, true);
+  assert.equal(spawns, 1);
+  assert.equal(settled, false, 'EOF does not mean the player has closed');
+  f.emitter.exitCode = 0;
+  f.emitter.emit('close', 0, null);
+  assert.deepEqual(await bounded(result), { kind: 'closed', code: 0, signal: null });
+  assert.deepEqual(getEventListeners(c.signal, 'abort'), []);
+});
+
+test('JPEG sequence without backpressure preserves frame order and ends once', async () => {
+  const f = fake(); const c = new AbortController();
+  const chunks: Buffer[] = [];
+  let finishes = 0;
+  f.emitter.stdin.on('data', chunk => chunks.push(Buffer.from(chunk)));
+  f.emitter.stdin.on('finish', () => finishes++);
+  const finished = once(f.emitter.stdin, 'finish');
+  const result = runFFplay(sequence, { signal: c.signal, spawnPlayer: () => f.child });
+  f.emitter.emit('spawn');
+  await bounded(finished);
+  assert.deepEqual(chunks, sequence);
+  assert.equal(finishes, 1);
+  f.emitter.emit('close', 0, null);
+  assert.equal((await bounded(result)).kind, 'closed');
+});
+
+for (const timing of ['waiting for drain', 'after drain before continuation'] as const) {
+  test(`JPEG sequence cancellation ${timing} skips remaining frames`, async t => {
+    const f = sequencePlayer(t); const c = new AbortController();
+    const result = runFFplay(sequence, { signal: c.signal, spawnPlayer: () => f.child });
+    let settled = false; void result.then(() => { settled = true; });
+    f.emitter.emit('spawn');
+    assert.deepEqual(f.chunks, sequence.slice(0, 1));
+    if (timing === 'after drain before continuation') f.release();
+    c.abort();
+    await nextTurn();
+    assert.deepEqual(f.chunks, sequence.slice(0, 1));
+    assert.equal(f.stdin.destroyed, true);
+    assert.equal(f.finalCalls, 0);
+    assert.equal(settled, false);
+    assert.deepEqual(f.kills, ['SIGTERM']);
+    assert.equal(f.stdin.listenerCount('drain'), 0);
+    f.emitter.signalCode = 'SIGTERM';
+    f.emitter.emit('close', null, 'SIGTERM');
+    assert.deepEqual(await bounded(result), { kind: 'cancelled' });
+    assert.deepEqual(getEventListeners(c.signal, 'abort'), []);
+  });
+}
+
+test('JPEG sequence EPIPE stops subsequent frames and waits for child close', async t => {
+  const f = sequencePlayer(t); const c = new AbortController();
+  const error = Object.assign(new Error('Broken pipe'), { code: 'EPIPE' });
+  const result = runFFplay(sequence, { signal: c.signal, spawnPlayer: () => f.child });
+  let settled = false; void result.then(() => { settled = true; });
+  f.emitter.emit('spawn');
+  f.release(error);
+  await nextTurn();
+  assert.deepEqual(f.chunks, sequence.slice(0, 1));
+  assert.equal(f.finalCalls, 0);
+  assert.equal(settled, false);
+  assert.deepEqual(f.kills, ['SIGTERM']);
+  assert.equal(f.stdin.listenerCount('drain'), 0);
+  f.emitter.signalCode = 'SIGTERM';
+  f.emitter.emit('close', null, 'SIGTERM');
+  assert.deepEqual(await bounded(result), { kind: 'failed', error, diagnostic: '' });
+  assert.deepEqual(getEventListeners(c.signal, 'abort'), []);
+});
+
+test('JPEG sequence stdin close during drain cannot hang or write another frame', async t => {
+  const f = sequencePlayer(t); const c = new AbortController();
+  const result = runFFplay(sequence, { signal: c.signal, spawnPlayer: () => f.child });
+  f.emitter.emit('spawn');
+  f.emitter.exitCode = 0;
+  f.stdin.destroy();
+  await nextTurn();
+  assert.deepEqual(f.chunks, sequence.slice(0, 1));
+  assert.equal(f.finalCalls, 0);
+  assert.equal(f.stdin.listenerCount('drain'), 0);
+  f.emitter.emit('close', 0, null);
+  const outcome = await bounded(result);
+  assert.equal(outcome.kind, 'failed');
+  if (outcome.kind === 'failed') assert.match(outcome.error.message, /closed before drain/);
+  assert.deepEqual(getEventListeners(c.signal, 'abort'), []);
+});
+
+test('a pre-aborted JPEG sequence never starts a player', async () => {
+  const c = new AbortController(); c.abort();
+  const result = await runFFplay(sequence, { signal: c.signal,
+    spawnPlayer() { throw new Error('must not spawn'); } });
+  assert.deepEqual(result, { kind: 'cancelled' });
+});
