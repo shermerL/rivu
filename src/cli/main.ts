@@ -6,10 +6,12 @@ const HELP = `Rivu - media transport playground
 Usage: rivu [--help | --version]
        rivu play-image <path>
        rivu play-jpeg <path>
+       rivu play-jpegs <path>...
 
 Commands:
   play-image <path>  Display a local image with FFplay; close the window or press Ctrl+C to stop
   play-jpeg <path>   Read a JPEG and send its bytes to FFplay
+  play-jpegs <path>...  Read and play an ordered sequence of up to 30 JPEGs
 
 Options:
   --help     Show this help message
@@ -23,6 +25,9 @@ switch (action.kind) {
     break;
   case "play-jpeg":
     process.exitCode = await playImage(action.path, "pipe");
+    break;
+  case "play-jpegs":
+    process.exitCode = await playImage(action.paths, "pipe");
     break;
   case "help":
     console.log(HELP);

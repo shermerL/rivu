@@ -3,9 +3,25 @@ export type CliAction =
   | { kind: "version" }
   | { kind: "play-image"; path: string }
   | { kind: "play-jpeg"; path: string }
+  | { kind: "play-jpegs"; paths: string[] }
   | { kind: "error"; message: string };
 
 export function parseArgs(args: string[]): CliAction {
+  if (args[0] === "play-jpegs") {
+    const paths = args.slice(1);
+
+    if (paths.length === 0 || paths.some(path => path.length === 0)) {
+      return {
+        kind: "error",
+        message: "Expected: play-jpegs <path>...",
+      };
+    }
+
+    return {
+      kind: "play-jpegs",
+      paths,
+    };
+  }
   if (args[0] === "play-image" || args[0] === "play-jpeg") {
     if (args.length !== 2 || !args[1]) {
       return {
