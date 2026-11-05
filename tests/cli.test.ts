@@ -17,6 +17,9 @@ const cases: { name: string; args: string[]; expected: CliAction }[] = [
   { name: "missing JPEG path", args: ["play-jpeg"], expected: { kind: "error", message: "Expected: play-jpeg <path>" } },
   { name: "empty JPEG path", args: ["play-jpeg", ""], expected: { kind: "error", message: "Expected: play-jpeg <path>" } },
   { name: "extra JPEG argument", args: ["play-jpeg", "frame.jpg", "extra"], expected: { kind: "error", message: "Expected: play-jpeg <path>" } },
+  { name: "missing JPEG sequence paths", args: ["play-jpegs"], expected: { kind: "error", message: "Expected: play-jpegs <path>..." } },
+  { name: "empty JPEG sequence path", args: ["play-jpegs", ""], expected: { kind: "error", message: "Expected: play-jpegs <path>..." } },
+  { name: "empty later JPEG sequence path", args: ["play-jpegs", "first.jpg", ""], expected: { kind: "error", message: "Expected: play-jpegs <path>..." } },
   {
     name: "unknown word",
     args: ["hello"],
@@ -105,8 +108,17 @@ for (const { name, args, expected } of cases) {
         assert.match(result.stdout, /Usage: rivu \[--help \| --version\]/);
         assert.match(result.stdout, /--help\s+Show this help message/);
         assert.match(result.stdout, /--version\s+Show version/);
+        assert.match(result.stdout, /rivu play-jpegs <path>\.\.\./);
       }
     }
+  });
+}
+
+for (const paths of [['one.jpg'], ['z.jpg', 'folder with spaces/a.jpg', '-frame.jpg']]) {
+  test(`parseArgs: JPEG sequence preserves ${paths.length} ordered paths`, () => {
+    const args = ['play-jpegs', ...paths]; Object.freeze(args);
+    assert.deepEqual(parseArgs(args), { kind: 'play-jpegs', paths });
+    assert.deepEqual(args, ['play-jpegs', ...paths]);
   });
 }
 
